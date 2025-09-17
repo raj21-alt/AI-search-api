@@ -4,7 +4,7 @@ import google.generativeai as genai
 from main import Review, ReviewStatus, AuditLog, SessionLocal
 
 # Configure Gemini API
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY", "AIzaSyDuabsAYHTAh_48zmeSZEuNubsaTIbeMvc"))
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 model = genai.GenerativeModel("gemini-2.0-flash")
 
 def classify_review(text: str):
