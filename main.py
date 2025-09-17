@@ -178,3 +178,28 @@ async def reject_review(rid: str, moderator: str = Body("moderator"), note: str 
     db.commit()
     db.close()
     return {"ok": True}
+
+
+from contextlib import asynccontextmanager
+import threading
+from worker import run_worker
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: launch worker
+    t = threading.Thread(target=run_worker, daemon=True)
+    t.start()
+    print("🚀 Worker launched inside main.py")
+    
+    yield  # 👈 This hands control back to FastAPI
+    
+    # Shutdown: cleanup (optional)
+    print("🛑 Shutting down worker...")
+
+# ✅ Attach lifespan to your existing app (don’t recreate a new one!)
+app.router.lifespan_context = lifespan
+
+# --- Your existing routes below ---
+@app.get("/")
+def root():
+    return {"msg": "Hello, API + Worker running together!"}
