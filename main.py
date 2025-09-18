@@ -121,7 +121,7 @@ def get_embedding_gemini(text: str):
     try:
         # Correct embeddings call
         res = genai.embed_content(
-            model=EMBED_MODEL_GEMINI,   # e.g., "models/embedding-001"
+            model=EMBED_MODEL_GEMINI or "models/embedding-001",   # e.g., "models/embedding-001"
             content=text
         )
         return res["embedding"]
