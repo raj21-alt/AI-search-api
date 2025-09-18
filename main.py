@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import requests
 import numpy as np
 from dotenv import load_dotenv
+from openai import OpenAI
 
 # Optional AI SDKs (import only if available)
 try:
@@ -35,6 +36,8 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 EMBED_MODEL_GEMINI = os.getenv("EMBED_MODEL_GEMINI", "")  # adjust as needed
 EMBED_MODEL_OPENAI = os.getenv("EMBED_MODEL_OPENAI", "text-embedding-3-small")  # example
+
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 # -----------------------
 # FastAPI setup
@@ -129,13 +132,15 @@ def get_embedding_gemini(text: str):
         raise RuntimeError(f"Gemini embedding failed: {e}")
 
 def get_embedding_openai(text: str):
-    if not openai:
-        raise RuntimeError("openai package not installed. pip install openai")
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY not set")
-    openai.api_key = OPENAI_API_KEY
-    res = openai.Embeddings.create(model=EMBED_MODEL_OPENAI, input=text)
-    return res["data"][0]["embedding"]
+
+    res = client.embeddings.create(
+        model=EMBED_MODEL_OPENAI,
+        input=text
+    )
+    return res.data[0].embedding
+
 
 def get_embedding_mock(text: str, dim=128):
     # Deterministic pseudo-embedding for dev (not semantic)
