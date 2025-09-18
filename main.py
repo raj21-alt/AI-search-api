@@ -151,6 +151,7 @@ def get_embedding_mock(text: str, dim=128):
     rng = random.Random(seed)
     return [rng.random() for _ in range(dim)]
 
+
 def get_embedding(text: str):
     provider = EMBEDDING_PROVIDER.lower()
     if provider == "gemini":
