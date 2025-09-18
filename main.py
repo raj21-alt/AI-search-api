@@ -1,18 +1,8 @@
-import os
-import uuid
-from datetime import datetime
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import Column, String, Text, DateTime, Enum, JSON, create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-import enum
 
-# -----------------------
-# FastAPI setup
-# -----------------------
-app = FastAPI(title="AI Search + Review System")
+app = FastAPI(title="AI Search Demo")
 
 # Allow CORS so WordPress frontend can call it
 app.add_middleware(
@@ -22,70 +12,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -----------------------
-# Database setup
-# -----------------------
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./dev.db")
-
-Base = declarative_base()
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-# -----------------------
-# Review Models
-# -----------------------
-class ReviewStatus(str, enum.Enum):
-    PENDING = "PENDING"
-    PROCESSING = "PROCESSING"
-    PUBLISHED = "PUBLISHED"
-    QUARANTINED = "QUARANTINED"
-    REMOVED = "REMOVED"
-
-
-class Review(Base):
-    __tablename__ = "reviews"
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    content = Column(Text, nullable=False)
-    meta = Column("metadata", JSON, nullable=True)  # ✅ safe: Python attr = meta, DB column = metadata
-    created_at = Column(DateTime, default=datetime.utcnow)
-    status = Column(Enum(ReviewStatus), default=ReviewStatus.PENDING)
-    decision_reason = Column(String, nullable=True)
-    ai_scores = Column(JSON, nullable=True)
-
-
-class AuditLog(Base):
-    __tablename__ = "audit_logs"
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    review_id = Column(String, nullable=False)
-    action = Column(String, nullable=False)  # e.g. AUTO_QUARANTINE, MOD_APPROVE
-    actor = Column(String, nullable=False, default="system")
-    timestamp = Column(DateTime, default=datetime.utcnow)
-    note = Column(Text, nullable=True)
-
-
-Base.metadata.create_all(bind=engine)
-
-
-# -----------------------
-# API Schemas
-# -----------------------
 class SearchRequest(BaseModel):
     query: str
     top_k: int = 4
 
-
-class IngestRequest(BaseModel):
-    content: str
-    metadata: dict = {}
-
-
-# -----------------------
-# Demo Search Endpoint
-# -----------------------
+# Demo AI tools dataset
 DEMO_AI_TOOLS = [
     {"id": 1, "title": "DALL·E 3", "url": "https://openai.com/dall-e", "excerpt": "Generates AI images from text prompts."},
     {"id": 2, "title": "ChatGPT", "url": "https://chat.openai.com", "excerpt": "AI chatbot that can write, debug, summarize text."},
@@ -96,110 +27,339 @@ DEMO_AI_TOOLS = [
     {"id": 7, "title": "Runway", "url": "https://runwayml.com", "excerpt": "AI-powered video and image editing platform."}
 ]
 
-
 @app.post("/search")
 async def search(req: SearchRequest):
     query = req.query.lower()
-    filtered = [
-        tool for tool in DEMO_AI_TOOLS
-        if any(word in query for word in tool["title"].lower().split() + tool["excerpt"].lower().split())
-    ]
+
+    # Simple keyword-based matching for demo
+    filtered = []
+    for tool in DEMO_AI_TOOLS:
+        # Check if any word in title or excerpt matches query
+        if any(word in query for word in tool["title"].lower().split() + tool["excerpt"].lower().split()):
+            filtered.append(tool)
+
+    # If no match, return top 4 by default
     if not filtered:
         filtered = DEMO_AI_TOOLS[:4]
+
     return {"results": filtered[:req.top_k]}
+# main.py
+import os
+import json
+import sqlite3
+import time
+from typing import List, Optional
+from fastapi import FastAPI, HTTPException, Body
+from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+import requests
+import numpy as np
+from dotenv import load_dotenv
 
+# Optional AI SDKs (import only if available)
+try:
+    import google.generativeai as genai
+except Exception:
+    genai = None
+
+try:
+    import openai
+except Exception:
+    openai = None
+
+load_dotenv()
 
 # -----------------------
-# Review System Endpoints
+# Config (env variables)
 # -----------------------
-@app.post("/ingest_review")
-async def ingest_review(req: IngestRequest):
-    if not req.content.strip():
-        raise HTTPException(status_code=400, detail="Missing content")
+WP_BASE = os.getenv("WP_BASE", "https://healthresearchdigest.co.uk")  # WordPress site base URL
+WP_TASK_ENDPOINT = os.getenv("WP_TASK_ENDPOINT", f"{WP_BASE}/wp-json/wp/v2/tasks")  # CPT REST endpoint (adjust if different)
+DB_PATH = os.getenv("DB_PATH", "tasks.db")
+EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "gemini")  # "gemini" | "openai" | "mock"
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+EMBED_MODEL_GEMINI = os.getenv("EMBED_MODEL_GEMINI", "")  # adjust as needed
+EMBED_MODEL_OPENAI = os.getenv("EMBED_MODEL_OPENAI", "text-embedding-3-small")  # example
 
-    db = SessionLocal()
-    review = Review(content=req.content, metadata=req.metadata)
-    db.add(review)
-    db.commit()
-    db.refresh(review)   # ✅ ensures we get the ID
-    review_id = review.id  # ✅ save ID while session is alive
-    db.close()
-    return {"status": "ok", "review_id": review_id, "message": "Review queued for processing"}
+# -----------------------
+# FastAPI setup
+# -----------------------
+app = FastAPI(title="AI Task Search (Tasks indexed from WP)")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # in prod limit to WP domain
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# -----------------------
+# DB helpers
+# -----------------------
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS tasks (
+        id INTEGER PRIMARY KEY,
+        wp_id INTEGER UNIQUE,
+        title TEXT,
+        description TEXT,
+        category TEXT,
+        url TEXT,
+        embedding TEXT,   -- JSON array stored as TEXT
+        updated_at REAL
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+def upsert_task(wp_id:int, title:str, description:str, category:str, url:str, embedding:List[float]):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    now = time.time()
+    emb_json = json.dumps(embedding)
+    c.execute("""
+      INSERT INTO tasks (wp_id, title, description, category, url, embedding, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(wp_id) DO UPDATE SET
+        title=excluded.title,
+        description=excluded.description,
+        category=excluded.category,
+        url=excluded.url,
+        embedding=excluded.embedding,
+        updated_at=excluded.updated_at
+    """, (wp_id, title, description, category, url, emb_json, now))
+    conn.commit()
+    conn.close()
+
+def fetch_all_indexed_tasks():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT wp_id, title, description, category, url, embedding FROM tasks")
+    rows = c.fetchall()
+    conn.close()
+    tasks = []
+    for wp_id, title, description, category, url, emb_json in rows:
+        embedding = json.loads(emb_json) if emb_json else None
+        tasks.append({
+            "wp_id": wp_id,
+            "title": title,
+            "description": description,
+            "category": category,
+            "url": url,
+            "embedding": embedding
+        })
+    return tasks
+
+# -----------------------
+# Embedding helpers
+# -----------------------
+def get_embedding_gemini(text: str):
+    if not genai:
+        raise RuntimeError("google.generativeai is not installed. pip install google-generative-ai")
+    if not GOOGLE_API_KEY:
+        raise RuntimeError("GOOGLE_API_KEY not set")
+
+    genai.configure(api_key=GOOGLE_API_KEY)
+
+    try:
+        # Correct embeddings call
+        res = genai.embed_content(
+            model=EMBED_MODEL_GEMINI,   # e.g., "models/embedding-001"
+            content=text
+        )
+        return res["embedding"]
+    except Exception as e:
+        raise RuntimeError(f"Gemini embedding failed: {e}")
+
+def get_embedding_openai(text: str):
+    if not openai:
+        raise RuntimeError("openai package not installed. pip install openai")
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY not set")
+    openai.api_key = OPENAI_API_KEY
+    res = openai.Embeddings.create(model=EMBED_MODEL_OPENAI, input=text)
+    return res["data"][0]["embedding"]
+
+def get_embedding_mock(text: str, dim=128):
+    # Deterministic pseudo-embedding for dev (not semantic)
+    # Use a hash -> seed -> random vector so same text => same vector
+    import hashlib, random
+    h = hashlib.md5(text.encode("utf-8")).hexdigest()
+    seed = int(h[:8], 16)
+    rng = random.Random(seed)
+    return [rng.random() for _ in range(dim)]
+
+def get_embedding(text: str):
+    provider = EMBEDDING_PROVIDER.lower()
+    if provider == "gemini":
+        try:
+            return get_embedding_gemini(text)
+        except Exception as e:
+            raise RuntimeError(f"Gemini embedding failed: {e}")
+    elif provider == "openai":
+        try:
+            return get_embedding_openai(text)
+        except Exception as e:
+            raise RuntimeError(f"OpenAI embedding failed: {e}")
+    else:
+        # mock
+        return get_embedding_mock(text)
+
+# -----------------------
+# WP fetch & index flow
+# -----------------------
+def fetch_tasks_from_wp(per_page=100, pages=10):
+    """
+    Fetch tasks CPT from WordPress REST API.
+    Works with both default categories and custom task taxonomies.
+    """
+    results = []
+    page = 1
+    while page <= pages:
+        params = {"per_page": per_page, "page": page}
+        try:
+            r = requests.get(WP_TASK_ENDPOINT, params=params, timeout=15)
+            if r.status_code >= 400:
+                break
+            arr = r.json()
+        except Exception:
+            break
+        if not arr:
+            break
+
+        for item in arr:
+            wp_id = item.get("id")
+            title = item.get("title", {}).get("rendered") if isinstance(item.get("title"), dict) else item.get("title")
+            description = item.get("excerpt", {}).get("rendered") if isinstance(item.get("excerpt"), dict) else item.get("excerpt") or item.get("content", {}).get("rendered", "")
+
+            # --- CATEGORY HANDLING ---
+            category = "Uncategorized"
+
+            # Case 1: Default WP categories
+            if isinstance(item.get("categories"), list) and item["categories"]:
+                category = f"Category-{item['categories'][0]}"
+
+            # Case 2: Custom taxonomy (task_category)
+            elif "_embedded" in item and "wp:term" in item["_embedded"]:
+                for tax in item["_embedded"]["wp:term"]:
+                    if isinstance(tax, list) and tax:
+                        # Try to find a taxonomy object with a name
+                        if "taxonomy" in tax[0] and tax[0]["taxonomy"] in ["task_category", "category"]:
+                            category = tax[0].get("name", category)
+
+            # --- URL ---
+            url = item.get("link") or f"{WP_BASE}/?p={wp_id}"
+
+            results.append({
+                "wp_id": wp_id,
+                "title": strip_html(title) if title else "",
+                "description": strip_html(description) if description else "",
+                "category": category,
+                "url": url
+            })
+        page += 1
+    return results
 
 
-@app.get("/review/{rid}")
-async def get_review(rid: str):
-    db = SessionLocal()
-    r = db.query(Review).filter(Review.id == rid).first()
-    db.close()
-    if not r:
-        raise HTTPException(status_code=404)
-    return {
-        "id": r.id,
-        "content": r.content,
-        "status": r.status,
-        "decision_reason": r.decision_reason,
-        "ai_scores": r.ai_scores,
-        "created_at": r.created_at,
-    }
+def strip_html(s):
+    # naive html stripper
+    import re
+    return re.sub('<[^<]+?>', '', s) if s else s
+
+# -----------------------
+# Search helpers
+# -----------------------
+def cosine_sim(a, b):
+    a = np.array(a, dtype=float)
+    b = np.array(b, dtype=float)
+    if np.linalg.norm(a)==0 or np.linalg.norm(b)==0:
+        return 0.0
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+
+def vector_search(query_emb, tasks, top_k=4):
+    scores = []
+    for t in tasks:
+        if not t.get("embedding"):
+            continue
+        s = cosine_sim(query_emb, t["embedding"])
+        scores.append((s, t))
+    scores.sort(key=lambda x: x[0], reverse=True)
+    top = [ {"score": float(s),"title": t["title"], "category": t["category"], "url": t["url"], "description": t["description"]} for s,t in scores[:top_k] ]
+    return top
+
+# -----------------------
+# API Schemas
+# -----------------------
+class SearchRequest(BaseModel):
+    query: str
+    top_k: int = 4
+
+class ReindexRequest(BaseModel):
+    force: bool = False
+
+# -----------------------
+# Endpoints
+# -----------------------
+@app.post("/reindex")
+async def reindex(req: ReindexRequest = Body(...)):
+    """
+    Fetch tasks from WP, compute embeddings, store in SQLite.
+    Set EMBEDDING_PROVIDER to 'gemini' for now in env vars.
+    """
+    tasks = fetch_tasks_from_wp()
+    if not tasks:
+        raise HTTPException(status_code=400, detail="No tasks fetched from WP. Check WP_TASK_ENDPOINT.")
+    # compute embeddings (may be slow) - do sequentially to avoid rate issues
+    for idx, t in enumerate(tasks):
+        text_for_embedding = f"{t['title']}. {t['description'] or ''} Category: {t['category']}"
+        try:
+            emb = get_embedding(text_for_embedding)
+            # Normalize to list of floats (some SDKs return numpy arrays, etc.)
+            emb_list = list(map(float, emb))
+        except Exception as e:
+            # fallback to mock to avoid failing entire index
+            emb_list = get_embedding_mock(text_for_embedding)
+        upsert_task(t["wp_id"], t["title"], t["description"], t["category"], t["url"], emb_list)
+    return {"ok": True, "indexed": len(tasks)}
+
+@app.post("/search")
+async def search(req: SearchRequest):
+    q = req.query.strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="Empty query")
+    try:
+        q_emb = get_embedding(q)
+    except Exception as e:
+        # in case of embedding failure, return error
+        raise HTTPException(status_code=500, detail=f"Embedding error: {e}")
+    # load tasks
+    tasks = fetch_all_indexed_tasks()
+    if not tasks:
+        raise HTTPException(status_code=500, detail="No indexed tasks. Run /reindex first.")
+    # ensure embeddings are numeric lists
+    for t in tasks:
+        if t["embedding"] is None:
+            t["embedding"] = get_embedding_mock(t["title"] + " " + (t["description"] or ""))
+    top = vector_search(q_emb, tasks, top_k=req.top_k)
+    return {"results": top}
+
+@app.get("/health")
+async def health():
+    return {"ok": True, "provider": EMBEDDING_PROVIDER}
+
+# -----------------------
+# Startup
+# -----------------------
+if __name__ == "__main__":
+    # initialize DB
+    init_db()
+    print("DB initialized at", DB_PATH)
+    # If you want to auto-reindex on start (dev), uncomment:
+    # from time import sleep; sleep(1); import asyncio; asyncio.run(reindex(ReindexRequest(force=True)))
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)), reload=True)
 
 
-@app.get("/admin/quarantined")
-async def list_quarantined():
-    db = SessionLocal()
-    rows = db.query(Review).filter(Review.status == ReviewStatus.QUARANTINED).all()
-    db.close()
-    return {"items": [{"id": r.id, "content": r.content, "metadata": r.metadata, "ai_scores": r.ai_scores} for r in rows]}
-
-
-@app.post("/admin/approve/{rid}")
-async def approve_review(rid: str, moderator: str = Body("moderator")):
-    db = SessionLocal()
-    r = db.query(Review).filter(Review.id == rid).first()
-    if not r:
-        raise HTTPException(status_code=404)
-    r.status = ReviewStatus.PUBLISHED
-    r.decision_reason = "Moderator approved"
-    db.add(AuditLog(review_id=rid, action="MOD_APPROVE", actor=moderator, note="Approved"))
-    db.commit()
-    db.close()
-    return {"ok": True}
-
-
-@app.post("/admin/reject/{rid}")
-async def reject_review(rid: str, moderator: str = Body("moderator"), note: str = Body(None)):
-    db = SessionLocal()
-    r = db.query(Review).filter(Review.id == rid).first()
-    if not r:
-        raise HTTPException(status_code=404)
-    r.status = ReviewStatus.REMOVED
-    r.decision_reason = "Moderator removed"
-    db.add(AuditLog(review_id=rid, action="MOD_REJECT", actor=moderator, note=note))
-    db.commit()
-    db.close()
-    return {"ok": True}
-
-
-from contextlib import asynccontextmanager
-import threading
-from worker import run_worker
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup: launch worker
-    t = threading.Thread(target=run_worker, daemon=True)
-    t.start()
-    print("🚀 Worker launched inside main.py")
     
-    yield  # 👈 This hands control back to FastAPI
-    
-    # Shutdown: cleanup (optional)
-    print("🛑 Shutting down worker...")
-
-# ✅ Attach lifespan to your existing app (don’t recreate a new one!)
-app.router.lifespan_context = lifespan
-
-# --- Your existing routes below ---
-@app.get("/")
-def root():
-    return {"msg": "Hello, API + Worker running together!"}
