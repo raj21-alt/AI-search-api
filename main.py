@@ -142,7 +142,7 @@ def get_embedding_openai(text: str):
     return res.data[0].embedding
 
 
-def get_embedding_mock(text: str, dim=128):
+def get_embedding_mock(text: str, dim=1536):
     # Deterministic pseudo-embedding for dev (not semantic)
     # Use a hash -> seed -> random vector so same text => same vector
     import hashlib, random
