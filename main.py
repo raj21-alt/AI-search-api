@@ -196,19 +196,20 @@ def fetch_tasks_from_wp(per_page=100, pages=10):
             description = item.get("excerpt", {}).get("rendered") if isinstance(item.get("excerpt"), dict) else item.get("excerpt") or item.get("content", {}).get("rendered", "")
 
             # --- CATEGORY HANDLING ---
-            category = "Uncategorized"
+            # --- TAG HANDLING ---
+            tasktag = "Untagged"
 
-            # Case 1: Default WP categories
-            if isinstance(item.get("categories"), list) and item["categories"]:
-                category = f"Category-{item['categories'][0]}"
+            # Case 1: Default WP tags
+            if isinstance(item.get("tags"), list) and item["tags"]:
+                tasktag = f"Tag-{item['tags'][0]}"
 
-            # Case 2: Custom taxonomy (task_category)
+            # Case 2: Custom taxonomy (tasktags)
             elif "_embedded" in item and "wp:term" in item["_embedded"]:
                 for tax in item["_embedded"]["wp:term"]:
                     if isinstance(tax, list) and tax:
-                        # Try to find a taxonomy object with a name
-                        if "taxonomy" in tax[0] and tax[0]["taxonomy"] in ["task_category", "category"]:
-                            category = tax[0].get("name", category)
+                        # Find taxonomy object named 'tasktags'
+                        if "taxonomy" in tax[0] and tax[0]["taxonomy"] in "tasktags":
+                            tasktag = tax[0].get("name", tasktag)
 
             # --- URL ---
             url = item.get("link") or f"{WP_BASE}/?p={wp_id}"
@@ -217,7 +218,7 @@ def fetch_tasks_from_wp(per_page=100, pages=10):
                 "wp_id": wp_id,
                 "title": strip_html(title) if title else "",
                 "description": strip_html(description) if description else "",
-                "category": category,
+                "category": tasktag,
                 "url": url
             })
         page += 1
