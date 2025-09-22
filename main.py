@@ -184,7 +184,7 @@ def fetch_tasks_from_wp(per_page=100, pages=10):
     results = []
     page = 1
     while page <= pages:
-        params = {"per_page": per_page, "page": page}
+        params = {"per_page": per_page, "page": page, "_embed": "wp:term"}  # embed terms for easier access
         try:
             r = requests.get(WP_TASK_ENDPOINT, params=params, timeout=15)
             if r.status_code >= 400:
@@ -200,20 +200,25 @@ def fetch_tasks_from_wp(per_page=100, pages=10):
             title = item.get("title", {}).get("rendered") if isinstance(item.get("title"), dict) else item.get("title")
             description = item.get("excerpt", {}).get("rendered") if isinstance(item.get("excerpt"), dict) else item.get("excerpt") or item.get("content", {}).get("rendered", "")
 
-            # --- CATEGORY HANDLING ---
-            # --- TAG HANDLING ---
+            # --- CATEGORY / TAG HANDLING ---
             tasktag = "Untagged"
 
-            # Case 1: Default WP tags
-            if isinstance(item.get("tags"), list) and item["tags"]:
-                tasktag = f"Tag-{item['tags'][0]}"
+            # Default WP tags
+            tag_ids = item.get("tags", [])
+            if tag_ids:
+                # fetch tag name for the first tag
+                try:
+                    r_tag = requests.get(f"{WP_BASE}/wp-json/wp/v2/tags/{tag_ids[0]}")
+                    if r_tag.status_code == 200:
+                        tasktag = r_tag.json().get("name", tasktag)
+                except Exception:
+                    pass
 
-            # Case 2: Custom taxonomy (tasktags)
+            # Custom taxonomy (tasktags)
             elif "_embedded" in item and "wp:term" in item["_embedded"]:
                 for tax in item["_embedded"]["wp:term"]:
                     if isinstance(tax, list) and tax:
-                        # Find taxonomy object named 'tasktags'
-                        if "taxonomy" in tax[0] and tax[0]["taxonomy"] in "tasktags":
+                        if "taxonomy" in tax[0] and tax[0]["taxonomy"] == "task_tag":  # <-- corrected
                             tasktag = tax[0].get("name", tasktag)
 
             # --- URL ---
@@ -226,8 +231,10 @@ def fetch_tasks_from_wp(per_page=100, pages=10):
                 "category": tasktag,
                 "url": url
             })
+
         page += 1
     return results
+
 
 
 def strip_html(s):
