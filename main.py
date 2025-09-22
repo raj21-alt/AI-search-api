@@ -51,6 +51,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
+
+
 # -----------------------
 # DB helpers
 # -----------------------
@@ -291,21 +296,26 @@ async def search(req: SearchRequest):
     q = req.query.strip()
     if not q:
         raise HTTPException(status_code=400, detail="Empty query")
+
     try:
         q_emb = get_embedding(q)
+
+        tasks = fetch_all_indexed_tasks()
+        if not tasks:
+            raise HTTPException(status_code=500, detail="No indexed tasks. Run /reindex first.")
+
+        for t in tasks:
+            if t["embedding"] is None:
+                t["embedding"] = get_embedding_mock(t["title"] + " " + (t["description"] or ""))
+
+        top = vector_search(q_emb, tasks, top_k=req.top_k)
+        return {"results": top}
+
     except Exception as e:
-        # in case of embedding failure, return error
-        raise HTTPException(status_code=500, detail=f"Embedding error: {e}")
-    # load tasks
-    tasks = fetch_all_indexed_tasks()
-    if not tasks:
-        raise HTTPException(status_code=500, detail="No indexed tasks. Run /reindex first.")
-    # ensure embeddings are numeric lists
-    for t in tasks:
-        if t["embedding"] is None:
-            t["embedding"] = get_embedding_mock(t["title"] + " " + (t["description"] or ""))
-    top = vector_search(q_emb, tasks, top_k=req.top_k)
-    return {"results": top}
+        import traceback, sys
+        traceback.print_exc(file=sys.stderr)  # goes to Render logs
+        raise HTTPException(status_code=500, detail=f"Search failed: {e}")
+
 
 @app.get("/health")
 async def health():
