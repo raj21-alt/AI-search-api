@@ -1,4 +1,3 @@
-# main.py
 import os
 import json
 import sqlite3
@@ -31,7 +30,7 @@ load_dotenv()
 WP_BASE = os.getenv("WP_BASE", "https://healthresearchdigest.co.uk")  # WordPress site base URL
 WP_TASK_ENDPOINT = os.getenv("WP_TASK_ENDPOINT", f"{WP_BASE}/wp-json/wp/v2/tasks")  # CPT REST endpoint (adjust if different)
 DB_PATH = os.getenv("DB_PATH", "tasks.db")
-EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "gemini")  # "gemini" | "openai" | "mock"
+EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "openai")  # "gemini" | "openai" | "mock"
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 EMBED_MODEL_GEMINI = os.getenv("EMBED_MODEL_GEMINI", "")  # adjust as needed
