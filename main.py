@@ -31,9 +31,7 @@ WP_BASE = os.getenv("WP_BASE", "https://healthresearchdigest.co.uk")  # WordPres
 WP_TASK_ENDPOINT = os.getenv("WP_TASK_ENDPOINT", f"{WP_BASE}/wp-json/wp/v2/tasks")  # CPT REST endpoint (adjust if different)
 DB_PATH = os.getenv("DB_PATH", "tasks.db")
 EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "openai")  # "gemini" | "openai" | "mock"
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-EMBED_MODEL_GEMINI = os.getenv("EMBED_MODEL_GEMINI", "")  # adjust as needed
 EMBED_MODEL_OPENAI = os.getenv("EMBED_MODEL_OPENAI", "text-embedding-3-small")  # example
 
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -117,23 +115,6 @@ def fetch_all_indexed_tasks():
 # -----------------------
 # Embedding helpers
 # -----------------------
-def get_embedding_gemini(text: str):
-    if not genai:
-        raise RuntimeError("google.generativeai is not installed. pip install google-generative-ai")
-    if not GOOGLE_API_KEY:
-        raise RuntimeError("GOOGLE_API_KEY not set")
-
-    genai.configure(api_key=GOOGLE_API_KEY)
-
-    try:
-        # Correct embeddings call
-        res = genai.embed_content(
-            model=EMBED_MODEL_GEMINI or "models/embedding-001",   # e.g., "models/embedding-001"
-            content=text
-        )
-        return res["embedding"]
-    except Exception as e:
-        raise RuntimeError(f"Gemini embedding failed: {e}")
 
 def get_embedding_openai(text: str):
     if not OPENAI_API_KEY:
@@ -158,12 +139,8 @@ def get_embedding_mock(text: str, dim=1536):
 
 def get_embedding(text: str):
     provider = EMBEDDING_PROVIDER.lower()
-    if provider == "gemini":
-        try:
-            return get_embedding_gemini(text)
-        except Exception as e:
-            raise RuntimeError(f"Gemini embedding failed: {e}")
-    elif provider == "openai":
+    
+    if provider == "openai":
         try:
             return get_embedding_openai(text)
         except Exception as e:
