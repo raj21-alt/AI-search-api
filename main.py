@@ -10,6 +10,9 @@ import requests
 import numpy as np
 from dotenv import load_dotenv
 from openai import OpenAI
+from fastapi import Request
+import asyncio
+from main import reindex, ReindexRequest
 
 # Optional AI SDKs (import only if available)
 try:
@@ -299,6 +302,21 @@ async def search(req: SearchRequest):
         traceback.print_exc(file=sys.stderr)  # goes to Render logs
         raise HTTPException(status_code=500, detail=f"Search failed: {e}")
 
+
+@app.post("/webhook/reindex")
+async def wp_webhook_reindex(req: Request):
+    """
+    Endpoint triggered by WordPress webhook on task creation/update.
+    """
+    try:
+        data = await req.json()  # Optional: WordPress can send task data here
+    except:
+        data = {}
+
+    # Trigger reindex in background so WP request returns immediately
+    asyncio.create_task(reindex(ReindexRequest(force=True)))
+
+    return {"ok": True, "message": "Reindex triggered", "received_data": data}
 
 @app.get("/health")
 async def health():
